@@ -17,7 +17,7 @@ def build_workflow(settings: Settings) -> TaskWorkflow:
     store = build_store(settings)
     search_provider = TavilySearchProvider(settings.tavily_api_key) if settings.tavily_api_key else DryRunSearchProvider()
     draft_provider = (
-        AnthropicDraftProvider(settings.anthropic_api_key, settings.anthropic_model)
+        AnthropicDraftProvider(settings.anthropic_api_key, settings.anthropic_model, settings.anthropic_review_model)
         if settings.anthropic_api_key
         else RuleBasedDraftProvider(settings.sender_name)
     )

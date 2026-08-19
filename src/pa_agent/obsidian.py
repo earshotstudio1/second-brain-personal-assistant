@@ -23,7 +23,7 @@ def render_task_note(bundle: dict[str, Any]) -> str:
         f"title: PA Task - {escape_yaml(task['user_request'])}",
         f"date: '{task['created_at'][:10]}'",
         "type: pa-agent-task",
-        "status: active",
+        f"status: {task['status']}",
         "tags:",
         "- pa-agent",
         "- admin",
@@ -59,6 +59,9 @@ def render_task_note(bundle: dict[str, Any]) -> str:
         "## Research Brief",
         brief.get("summary", "No brief yet."),
         "",
+        "### Recommendation",
+        brief.get("recommendation") or "None recorded.",
+        "",
         "### Ranked Options",
         ]
     )
@@ -72,6 +75,12 @@ def render_task_note(bundle: dict[str, Any]) -> str:
         lines.append(f"- {item}")
     if not brief.get("uncertainty"):
         lines.append("- None recorded.")
+
+    lines.extend(["", "### Cited Sources"])
+    for url in brief.get("sources", []):
+        lines.append(f"- [{url}]({url})")
+    if not brief.get("sources"):
+        lines.append("- None cited.")
 
     lines.extend(["", "## Contacts"])
     for contact in bundle["contacts"]:

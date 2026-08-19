@@ -107,6 +107,30 @@ def handle_update(settings: Settings, update: dict[str, Any]) -> None:
             return
         lines = [f"{row['task_id']} | {row['stage']} | {row['user_request']}" for row in tasks[:10]]
         _send(settings, chat_id, "\n".join(lines))
+    elif text.startswith("/cancel"):
+        target = text.removeprefix("/cancel").strip()
+        if not target:
+            _send(settings, chat_id, "Send `/cancel <task_id>`, or `/cancel all` for every pending task.")
+            return
+        store = build_store(settings)
+        if target.lower() == "all":
+            task_ids = [row["task_id"] for row in store.cancellable_tasks()]
+            if not task_ids:
+                _send(settings, chat_id, "No pending tasks to cancel.")
+                return
+            for task_id in task_ids:
+                store.cancel_task(task_id, reason="Cancelled in Telegram", actor="telegram")
+                refresh_obsidian_export(settings, store, task_id)
+            listed = "\n".join(f"`{task_id}`" for task_id in task_ids)
+            _send(settings, chat_id, f"Cancelled {len(task_ids)} task(s):\n{listed}")
+            return
+        try:
+            task = store.cancel_task(target, reason="Cancelled in Telegram", actor="telegram")
+        except ValueError as exc:
+            _send(settings, chat_id, str(exc))
+            return
+        refresh_obsidian_export(settings, store, task["task_id"])
+        _send(settings, chat_id, f"Cancelled `{task['task_id']}`.\nStage: `{task['stage']}`")
     elif text.startswith("/debug"):
         task_id = text.removeprefix("/debug").strip()
         store = build_store(settings)

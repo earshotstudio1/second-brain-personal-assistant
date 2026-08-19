@@ -8,6 +8,18 @@ from typing import Any
 
 from .models import Contact, Draft, Source, utc_now
 
+# Stages a task can still be cancelled from: it has been created but has not yet
+# reached a terminal outcome. Anything outside this set is already finished
+# (`manual_send_ready`, `closed_no_send`) or already cancelled.
+IN_FLIGHT_STAGES = (
+    "created",
+    "awaiting_clarification",
+    "researching",
+    "drafting",
+    "awaiting_approval",
+)
+CANCELLED_STAGE = "cancelled"
+
 
 def connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +304,49 @@ class Store:
         self.conn.commit()
         return self.get_draft(draft_id)
 
+    def cancel_task(self, task_id: str, reason: str = "", actor: str = "user") -> sqlite3.Row:
+        """Move a task to the terminal `cancelled` stage and record it in the audit trail.
+
+        Cancelling never deletes research, contacts, or drafts - it stops the task
+        from progressing and takes it out of the pending list.
+        """
+        task = self.get_task(task_id)
+        if task is None:
+            raise ValueError(f"Task not found: {task_id}")
+        if task["stage"] == CANCELLED_STAGE:
+            raise ValueError(f"Task is already cancelled: {task_id}")
+        if task["stage"] not in IN_FLIGHT_STAGES:
+            raise ValueError(f"Task has already finished at stage '{task['stage']}' and cannot be cancelled: {task_id}")
+        self.conn.execute(
+            "UPDATE tasks SET stage = ?, status = ?, updated_at = ? WHERE task_id = ?",
+            (CANCELLED_STAGE, "cancelled", utc_now(), task_id),
+        )
+        self.add_audit_event(
+            task_id,
+            None,
+            "task_cancelled",
+            actor,
+            {
+                "reason": reason,
+                "previous_stage": task["stage"],
+                "previous_status": task["status"],
+            },
+        )
+        self.conn.commit()
+        return self.get_task(task_id)
+
+    def cancellable_tasks(self) -> list[sqlite3.Row]:
+        placeholders = ", ".join("?" for _ in IN_FLIGHT_STAGES)
+        return self.conn.execute(
+            f"SELECT * FROM tasks WHERE stage IN ({placeholders}) ORDER BY created_at",
+            IN_FLIGHT_STAGES,
+        ).fetchall()
+
     def recompute_task_stage(self, task_id: str) -> None:
+        task = self.get_task(task_id)
+        if task is None or task["stage"] == CANCELLED_STAGE:
+            # A cancelled task is terminal: draft activity must not revive it.
+            return
         rows = self.conn.execute(
             "SELECT status, COUNT(*) AS count FROM drafts WHERE task_id = ? GROUP BY status",
             (task_id,),

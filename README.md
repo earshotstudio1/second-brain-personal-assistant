@@ -49,6 +49,17 @@ python -m venv .venv
 
 Copy `.env.example` to `.env` and add `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` for live mode; without them it runs dry on realistic sample data.
 
+## Draft quality
+
+The drafting model defaults to `claude-sonnet-5` (`ANTHROPIC_MODEL`). Four things hold quality up rather than model size:
+
+- **Structured output** - the research brief is constrained to a JSON schema (summary, options, recommendation, sources, open questions) through `output_config.format`, so nothing depends on finding JSON inside prose.
+- **Acceptance criteria in the system prompt** (`voice.py`) - cite only supplied source URLs, invent no figures, state uncertainty, British English, and Daniel's writing rules.
+- **A self-review pass** - every outreach draft is checked against those criteria by a second short call (`ANTHROPIC_REVIEW_MODEL`, defaults to the drafting model). On a fail the agent gets exactly one revision attempt, then keeps whichever version breaks fewer rules.
+- **Adaptive thinking** on the drafting calls, with the review call pinned to low effort.
+
+The voice rules run twice: as prompt text, and as local checks in `voice.py` that do not depend on the model agreeing it followed them. Those local checks can veto a passing review.
+
 ## Telegram mode
 
 Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_ALLOWED_CHAT_ID`, then:
@@ -61,6 +72,7 @@ Commands:
 
 - `/task research and draft outreach for ...`
 - `/status`
+- `/cancel <task_id>` or `/cancel all` - moves a task to the terminal `cancelled` stage and records it in the audit trail. Research, contacts, and drafts are kept.
 - `/debug <task_id>`
 - If context is missing, the bot asks one clarification question. Reply to that message to continue the task.
 - Draft buttons support approve, edit, and reject. Edit means replying to the draft message with revision instructions; the agent redrafts and increments the draft version.

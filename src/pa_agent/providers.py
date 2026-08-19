@@ -5,10 +5,70 @@ import re
 import urllib.error
 import urllib.request
 from dataclasses import asdict
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
-from .models import Contact, Draft, ResearchBrief, Source
+from .models import Contact, Draft, DraftReview, ResearchBrief, Source
 from .security import UNTRUSTED_CONTENT_RULE, neutralize_untrusted_text
+from .voice import QUALITY_CHECKLIST, VOICE_RULES, better_draft, voice_violations
+
+# Structured output schemas. Constraining the response to a schema removes the
+# "find the JSON somewhere in the prose" step, which is where a cheaper model is
+# most likely to wobble.
+BRIEF_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "rank": {"type": "integer"},
+                    "name": {"type": "string"},
+                    "reason": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "source_url": {"type": "string"},
+                },
+                "required": ["rank", "name", "reason", "confidence", "source_url"],
+                "additionalProperties": False,
+            },
+        },
+        "recommendation": {"type": "string"},
+        "sources": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary", "options", "recommendation", "sources", "open_questions"],
+    "additionalProperties": False,
+}
+
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "passed": {"type": "boolean"},
+        "issues": {"type": "array", "items": {"type": "string"}},
+        "fixes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["passed", "issues", "fixes"],
+    "additionalProperties": False,
+}
+
+DRAFT_SYSTEM_PROMPT = f"{UNTRUSTED_CONTENT_RULE}\n\n{QUALITY_CHECKLIST}"
+
+REVIEW_SYSTEM_PROMPT = (
+    f"{UNTRUSTED_CONTENT_RULE}\n\n"
+    "You are reviewing another model's output against acceptance criteria. Be strict and specific. "
+    "Report only breaches you can point at in the text.\n\n"
+    f"{QUALITY_CHECKLIST}"
+)
+
+
+def needs_revision(review: DraftReview, draft_text: str) -> bool:
+    """Decide whether a draft goes round again.
+
+    The reviewing model can say the draft passed while the draft still breaks a
+    voice rule, so the local checks get a veto.
+    """
+    return not review.passed or bool(voice_violations(draft_text))
 
 
 class SearchProvider(Protocol):
@@ -117,7 +177,18 @@ class RuleBasedDraftProvider:
             "Prices and availability are not assumed unless present in a cited source.",
         ]
         summary = f"Research task: {request}. Found {len(contacts)} draftable option(s) from {len(sources)} source(s)."
-        return ResearchBrief(summary=summary, ranked_options=ranked_options, uncertainty=uncertainty)
+        recommendation = (
+            f"Start with {ranked_options[0]['name']} and confirm details directly."
+            if ranked_options
+            else "No option has enough evidence to recommend yet."
+        )
+        return ResearchBrief(
+            summary=summary,
+            ranked_options=ranked_options,
+            uncertainty=uncertainty,
+            recommendation=recommendation,
+            sources=[source.url for source in sources if source.url],
+        )
 
     def create_draft(self, request: str, contact: Contact, brief: ResearchBrief) -> str:
         org = contact.organization or contact.name
@@ -148,9 +219,27 @@ class RuleBasedDraftProvider:
 
 
 class AnthropicDraftProvider:
-    def __init__(self, api_key: str, model: str):
+    """Drafting provider with the quality scaffolding a cheaper model needs.
+
+    Three things carry the quality: the research brief is constrained to a JSON
+    schema, the acceptance criteria travel in the system prompt on every call,
+    and each outreach draft gets one self-review pass with at most one revision.
+    """
+
+    ENDPOINT = "https://api.anthropic.com/v1/messages"
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        review_model: str | None = None,
+        transport: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+    ):
         self.api_key = api_key
         self.model = model
+        self.review_model = review_model or model
+        # Injectable so tests can exercise the full decision path without network.
+        self._transport = transport or self._http_post
 
     def create_brief(self, request: str, sources: list[Source], contacts: list[Contact]) -> ResearchBrief:
         safe_sources = [
@@ -160,56 +249,151 @@ class AnthropicDraftProvider:
             }
             for source in sources
         ]
+        allowed_urls = [source.url for source in sources if source.url]
         prompt = (
-            f"{UNTRUSTED_CONTENT_RULE}\n\n"
             "Create a concise sourced research brief. Separate verified facts from inferences. "
-            "Return JSON with keys: summary, ranked_options, uncertainty.\n\n"
+            "Rank the options, give one recommendation, and list the questions the sources do not answer.\n"
+            f"Cite only these URLs: {json.dumps(allowed_urls, ensure_ascii=False)}\n\n"
             f"User request: {request}\n"
             f"Sources: {json.dumps(safe_sources, ensure_ascii=False)}\n"
             f"Contacts: {json.dumps([asdict(c) for c in contacts], ensure_ascii=False)}"
         )
-        data = self._json_message(prompt)
+        data = self._structured_message(prompt, BRIEF_SCHEMA, thinking=True)
+        # Schema keys are written for the model; the dataclass keeps the names the
+        # rest of the app and the Obsidian note already use.
         return ResearchBrief(
             summary=data.get("summary", ""),
-            ranked_options=data.get("ranked_options", []),
-            uncertainty=data.get("uncertainty", []),
+            ranked_options=data.get("options", []),
+            uncertainty=data.get("open_questions", []),
+            recommendation=data.get("recommendation", ""),
+            sources=data.get("sources", []),
         )
 
     def create_draft(self, request: str, contact: Contact, brief: ResearchBrief) -> str:
         prompt = (
-            f"{UNTRUSTED_CONTENT_RULE}\n\n"
             "Draft a friendly but professional outreach message. Do not invent facts, prices, credentials, or availability. "
             "Ask for missing information. Keep it concise.\n\n"
             f"User request: {request}\n"
             f"Contact: {json.dumps(asdict(contact), ensure_ascii=False)}\n"
             f"Brief: {json.dumps(asdict(brief), ensure_ascii=False)}"
         )
-        return self._text_message(prompt).strip()
+        draft = self._text_message(prompt, thinking=True).strip()
+
+        review = self.review_draft(request, brief, draft)
+        if not needs_revision(review, draft):
+            return draft
+
+        revision_prompt = (
+            "Revise the draft so it satisfies every acceptance criterion. Change only what the review calls out.\n\n"
+            f"User request: {request}\n"
+            f"Contact: {json.dumps(asdict(contact), ensure_ascii=False)}\n"
+            f"Brief: {json.dumps(asdict(brief), ensure_ascii=False)}\n"
+            f"Current draft: {draft}\n"
+            f"Review issues: {json.dumps(review.issues, ensure_ascii=False)}\n"
+            f"Required fixes: {json.dumps(review.fixes, ensure_ascii=False)}\n"
+            f"Local checks also flagged: {json.dumps(voice_violations(draft), ensure_ascii=False)}"
+        )
+        revised = self._text_message(revision_prompt, thinking=True).strip()
+        # One revision only, so cost stays bounded. Keep whichever version reads cleaner.
+        return better_draft(draft, revised)
+
+    def review_draft(self, request: str, brief: ResearchBrief, draft_text: str) -> DraftReview:
+        prompt = (
+            "Check this outreach draft against the acceptance criteria. "
+            "Return passed=false if any criterion is breached, with the specific issues and the fixes needed.\n\n"
+            f"User request: {request}\n"
+            f"Brief: {json.dumps(asdict(brief), ensure_ascii=False)}\n"
+            f"Draft: {draft_text}"
+        )
+        data = self._structured_message(
+            prompt,
+            REVIEW_SCHEMA,
+            model=self.review_model,
+            system=REVIEW_SYSTEM_PROMPT,
+            max_tokens=4096,
+            effort="low",
+        )
+        return DraftReview(
+            passed=bool(data.get("passed", False)),
+            issues=list(data.get("issues", [])),
+            fixes=list(data.get("fixes", [])),
+        )
 
     def revise_draft(self, request: str, contact: Contact, brief: ResearchBrief, current_text: str, instructions: str) -> str:
         prompt = (
-            f"{UNTRUSTED_CONTENT_RULE}\n\n"
             "Revise this outreach draft using the user's edit instructions. Keep it friendly, professional, concise, "
             "and do not invent facts, prices, credentials, or availability.\n\n"
             f"User request: {request}\n"
             f"Contact: {json.dumps(asdict(contact), ensure_ascii=False)}\n"
             f"Brief: {json.dumps(asdict(brief), ensure_ascii=False)}\n"
             f"Current draft: {current_text}\n"
-            f"Edit instructions: {instructions}"
+            f"Edit instructions: {instructions}\n\n"
+            f"{VOICE_RULES}"
         )
-        return self._text_message(prompt).strip()
+        return self._text_message(prompt, thinking=True).strip()
 
-    def _text_message(self, prompt: str) -> str:
-        body = json.dumps(
-            {
-                "model": self.model,
-                "max_tokens": 4096,
-                "messages": [{"role": "user", "content": prompt[:12000]}],
-            }
-        ).encode("utf-8")
+    def _request_body(
+        self,
+        prompt: str,
+        *,
+        model: str | None = None,
+        system: str = DRAFT_SYSTEM_PROMPT,
+        max_tokens: int = 16000,
+        thinking: bool = False,
+        schema: dict[str, Any] | None = None,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "max_tokens": max_tokens,
+            "system": system,
+            "messages": [{"role": "user", "content": prompt[:12000]}],
+        }
+        if thinking:
+            # Adaptive thinking: the model decides how much reasoning the task needs.
+            # No budget_tokens - current models reject it.
+            body["thinking"] = {"type": "adaptive"}
+        output_config: dict[str, Any] = {}
+        if schema is not None:
+            output_config["format"] = {"type": "json_schema", "schema": schema}
+        if effort is not None:
+            output_config["effort"] = effort
+        if output_config:
+            body["output_config"] = output_config
+        return body
+
+    def _text_message(self, prompt: str, *, thinking: bool = False) -> str:
+        payload = self._transport(self._request_body(prompt, thinking=thinking))
+        return _text_from_payload(payload)
+
+    def _structured_message(
+        self,
+        prompt: str,
+        schema: dict[str, Any],
+        *,
+        model: str | None = None,
+        system: str = DRAFT_SYSTEM_PROMPT,
+        max_tokens: int = 16000,
+        thinking: bool = False,
+        effort: str | None = None,
+    ) -> dict[str, Any]:
+        payload = self._transport(
+            self._request_body(
+                prompt,
+                model=model,
+                system=system,
+                max_tokens=max_tokens,
+                thinking=thinking,
+                schema=schema,
+                effort=effort,
+            )
+        )
+        return _parse_json_response(_text_from_payload(payload))
+
+    def _http_post(self, body: dict[str, Any]) -> dict[str, Any]:
         req = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=body,
+            self.ENDPOINT,
+            data=json.dumps(body).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
                 "x-api-key": self.api_key,
@@ -218,18 +402,31 @@ class AnthropicDraftProvider:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            # The API puts the actual reason in the response body. Without it the
+            # caller sees "HTTP Error 400: Bad Request" and learns nothing.
+            detail = exc.read().decode("utf-8", errors="replace")[:500]
+            raise RuntimeError(f"Anthropic request failed ({exc.code}): {detail}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError(f"Anthropic request failed: {exc}") from exc
-        parts = payload.get("content", [])
-        return "\n".join(part.get("text", "") for part in parts if part.get("type") == "text")
 
-    def _json_message(self, prompt: str) -> dict:
-        text = self._text_message(prompt)
+
+def _text_from_payload(payload: dict[str, Any]) -> str:
+    parts = payload.get("content", [])
+    return "\n".join(part.get("text", "") for part in parts if part.get("type") == "text")
+
+
+def _parse_json_response(text: str) -> dict[str, Any]:
+    # A schema-constrained response is already valid JSON. The fallback covers the
+    # edge cases the schema does not, such as a truncated or refused response.
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.S)
         if not match:
-            raise RuntimeError(f"Model did not return JSON: {text[:300]}")
+            raise RuntimeError(f"Model did not return JSON: {text[:300]}") from None
         return json.loads(match.group(0))
 
 

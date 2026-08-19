@@ -19,6 +19,7 @@ class Settings:
     tavily_api_key: str | None
     anthropic_api_key: str | None
     anthropic_model: str
+    anthropic_review_model: str
     sender_name: str
 
     @property
@@ -34,6 +35,7 @@ def load_settings() -> Settings:
     vault = Path(os.getenv("PA_AGENT_OBSIDIAN_VAULT") or str(DEFAULT_OBSIDIAN_VAULT))
     task_dir = Path(os.getenv("PA_AGENT_OBSIDIAN_TASK_DIR") or r"Projects\Active\Personal Assistant Agent Tasks")
     db_path = Path(os.getenv("PA_AGENT_DB_PATH") or str(PROJECT_ROOT / "data" / "pa_agent.sqlite3"))
+    model = os.getenv("ANTHROPIC_MODEL") or "claude-sonnet-5"
     return Settings(
         db_path=db_path,
         obsidian_vault=vault,
@@ -42,7 +44,11 @@ def load_settings() -> Settings:
         telegram_allowed_chat_id=os.getenv("TELEGRAM_ALLOWED_CHAT_ID"),
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        anthropic_model=os.getenv("ANTHROPIC_MODEL") or "claude-opus-5",
+        anthropic_model=model,
+        # The self-review pass is a short second call. It defaults to the same
+        # model as drafting so there is only one model to think about, but it can
+        # be pointed at a cheaper model independently.
+        anthropic_review_model=os.getenv("ANTHROPIC_REVIEW_MODEL") or model,
         sender_name=os.getenv("PA_AGENT_SENDER_NAME") or "Your Name",
     )
 

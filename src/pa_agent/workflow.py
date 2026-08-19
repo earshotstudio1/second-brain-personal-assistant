@@ -65,6 +65,8 @@ class TaskWorkflow:
             summary=brief_data.get("summary", ""),
             ranked_options=brief_data.get("ranked_options", []),
             uncertainty=brief_data.get("uncertainty", []),
+            recommendation=brief_data.get("recommendation", ""),
+            sources=brief_data.get("sources", []),
         )
         contact = Contact(
             name=contact_row["name"],

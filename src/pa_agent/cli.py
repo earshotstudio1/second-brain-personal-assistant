@@ -40,6 +40,10 @@ def main() -> None:
     reject_parser.add_argument("draft_id")
     reject_parser.add_argument("--reason", default="")
 
+    cancel_parser = sub.add_parser("cancel")
+    cancel_parser.add_argument("task_id", help="Task ID to cancel, or 'all' for every pending task.")
+    cancel_parser.add_argument("--reason", default="")
+
     redraft_parser = sub.add_parser("redraft")
     redraft_parser.add_argument("draft_id")
     redraft_parser.add_argument("instructions")
@@ -102,6 +106,22 @@ def main() -> None:
         draft = store.reject_draft(args.draft_id, reason=args.reason)
         refresh_obsidian_export(settings, store, draft["task_id"])
         print(f"Rejected {args.draft_id}")
+        return
+
+    if args.command == "cancel":
+        if args.task_id == "all":
+            task_ids = [row["task_id"] for row in store.cancellable_tasks()]
+            if not task_ids:
+                print("No pending tasks to cancel.")
+                return
+            for task_id in task_ids:
+                store.cancel_task(task_id, reason=args.reason, actor="cli")
+                refresh_obsidian_export(settings, store, task_id)
+                print(f"Cancelled {task_id}")
+            return
+        task = store.cancel_task(args.task_id, reason=args.reason, actor="cli")
+        refresh_obsidian_export(settings, store, task["task_id"])
+        print(f"Cancelled {task['task_id']} (stage: {task['stage']})")
         return
 
     if args.command == "redraft":

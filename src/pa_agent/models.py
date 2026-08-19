@@ -47,4 +47,15 @@ class ResearchBrief:
     summary: str
     ranked_options: list[dict[str, Any]] = field(default_factory=list)
     uncertainty: list[str] = field(default_factory=list)
+    recommendation: str = ""
+    sources: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DraftReview:
+    """Result of the self-review pass over a generated draft."""
+
+    passed: bool
+    issues: list[str] = field(default_factory=list)
+    fixes: list[str] = field(default_factory=list)
 
