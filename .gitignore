@@ -5,6 +5,3 @@ __pycache__/
 *.egg-info/
 data/
 .env
-
-# Vault note living alongside the project source, not project source itself.
-2026-07-27-Capture-Agent-Authenticated-Social-Capture.md
