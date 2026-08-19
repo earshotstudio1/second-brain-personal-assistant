@@ -27,9 +27,13 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    vault = Path(os.getenv("PA_AGENT_OBSIDIAN_VAULT", str(DEFAULT_OBSIDIAN_VAULT)))
-    task_dir = Path(os.getenv("PA_AGENT_OBSIDIAN_TASK_DIR", r"Projects\Active\Personal Assistant Agent Tasks"))
-    db_path = Path(os.getenv("PA_AGENT_DB_PATH", str(PROJECT_ROOT / "data" / "pa_agent.sqlite3")))
+    # `os.getenv(key, default)` only falls back when the key is entirely absent -
+    # a key present in .env with an empty value still returns "". Since an empty
+    # string silently sent as a model name, a path, or a display name is worse
+    # than the default, use `or default` everywhere a blank value would matter.
+    vault = Path(os.getenv("PA_AGENT_OBSIDIAN_VAULT") or str(DEFAULT_OBSIDIAN_VAULT))
+    task_dir = Path(os.getenv("PA_AGENT_OBSIDIAN_TASK_DIR") or r"Projects\Active\Personal Assistant Agent Tasks")
+    db_path = Path(os.getenv("PA_AGENT_DB_PATH") or str(PROJECT_ROOT / "data" / "pa_agent.sqlite3"))
     return Settings(
         db_path=db_path,
         obsidian_vault=vault,
@@ -38,7 +42,7 @@ def load_settings() -> Settings:
         telegram_allowed_chat_id=os.getenv("TELEGRAM_ALLOWED_CHAT_ID"),
         tavily_api_key=os.getenv("TAVILY_API_KEY"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-        anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"),
-        sender_name=os.getenv("PA_AGENT_SENDER_NAME", "Your Name"),
+        anthropic_model=os.getenv("ANTHROPIC_MODEL") or "claude-opus-5",
+        sender_name=os.getenv("PA_AGENT_SENDER_NAME") or "Your Name",
     )
 

@@ -203,7 +203,7 @@ class AnthropicDraftProvider:
         body = json.dumps(
             {
                 "model": self.model,
-                "max_tokens": 1200,
+                "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt[:12000]}],
             }
         ).encode("utf-8")
