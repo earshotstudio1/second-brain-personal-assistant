@@ -7,6 +7,7 @@ import urllib.request
 from dataclasses import asdict
 from typing import Any, Callable, Protocol
 
+from .config import model_capabilities
 from .models import Contact, Draft, DraftReview, ResearchBrief, Source
 from .security import UNTRUSTED_CONTENT_RULE, neutralize_untrusted_text
 from .voice import QUALITY_CHECKLIST, VOICE_RULES, better_draft, voice_violations
@@ -343,20 +344,29 @@ class AnthropicDraftProvider:
         schema: dict[str, Any] | None = None,
         effort: str | None = None,
     ) -> dict[str, Any]:
+        resolved_model = model or self.model
+        caps = model_capabilities(resolved_model)
         body: dict[str, Any] = {
-            "model": model or self.model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": prompt[:12000]}],
         }
-        if thinking:
-            # Adaptive thinking: the model decides how much reasoning the task needs.
-            # No budget_tokens - current models reject it.
+        if thinking and caps.adaptive_thinking:
+            # Adaptive thinking: the model decides how much reasoning the task
+            # needs. No budget_tokens - modern models reject it.
             body["thinking"] = {"type": "adaptive"}
+        # Legacy models (caps.budget_thinking) only support the older
+        # enabled+budget_tokens form, which needs a budget picked below
+        # max_tokens for every call site. Omitting `thinking` entirely there
+        # is the simplest correct option, so `thinking=True` is a no-op on
+        # them rather than an error.
         output_config: dict[str, Any] = {}
         if schema is not None:
             output_config["format"] = {"type": "json_schema", "schema": schema}
-        if effort is not None:
+        if effort is not None and caps.effort:
+            # output_config.effort errors on models that don't support it
+            # (e.g. Haiku 4.5) - only send it when the capability map says so.
             output_config["effort"] = effort
         if output_config:
             body["output_config"] = output_config

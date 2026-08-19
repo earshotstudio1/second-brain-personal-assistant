@@ -51,12 +51,12 @@ Copy `.env.example` to `.env` and add `ANTHROPIC_API_KEY` and `TAVILY_API_KEY` f
 
 ## Draft quality
 
-The drafting model defaults to `claude-sonnet-5` (`ANTHROPIC_MODEL`). Four things hold quality up rather than model size:
+The drafting model defaults to `claude-haiku-4-5` (`ANTHROPIC_MODEL`). Four things hold quality up rather than model size:
 
 - **Structured output** - the research brief is constrained to a JSON schema (summary, options, recommendation, sources, open questions) through `output_config.format`, so nothing depends on finding JSON inside prose.
 - **Acceptance criteria in the system prompt** (`voice.py`) - cite only supplied source URLs, invent no figures, state uncertainty, British English, and Daniel's writing rules.
 - **A self-review pass** - every outreach draft is checked against those criteria by a second short call (`ANTHROPIC_REVIEW_MODEL`, defaults to the drafting model). On a fail the agent gets exactly one revision attempt, then keeps whichever version breaks fewer rules.
-- **Adaptive thinking** on the drafting calls, with the review call pinned to low effort.
+- **Adaptive thinking** on the drafting calls, with the review call pinned to low effort - on models that support them. Not every model does: `output_config.effort` and `thinking: {"type": "adaptive"}` are 4.6+/5-generation features and error on older models such as Haiku 4.5. `config.model_capabilities()` maps each model ID to what it accepts and `providers.py` builds requests accordingly, so switching `ANTHROPIC_MODEL` doesn't need a code change - Haiku simply runs without `effort` or adaptive thinking.
 
 The voice rules run twice: as prompt text, and as local checks in `voice.py` that do not depend on the model agreeing it followed them. Those local checks can veto a passing review.
 

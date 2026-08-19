@@ -201,6 +201,22 @@ class SelfReviewPassTests(unittest.TestCase):
         self.assertEqual(result, CLEAN_DRAFT)
 
     def test_review_call_uses_the_review_model_at_low_effort(self) -> None:
+        # claude-opus-4-8 is a modern (4.6+) model, so `effort` is supported
+        # and should be sent.
+        transport = FakeTransport([_text_payload(CLEAN_DRAFT), _json_payload(PASSED_REVIEW)])
+        provider = AnthropicDraftProvider("key", "claude-sonnet-5", review_model="claude-opus-4-8", transport=transport)
+
+        provider.create_draft("research crm options", CONTACT, BRIEF)
+
+        review_body = transport.requests[1]
+        self.assertEqual(review_body["model"], "claude-opus-4-8")
+        self.assertEqual(review_body["output_config"]["effort"], "low")
+        self.assertEqual(review_body["output_config"]["format"]["schema"], REVIEW_SCHEMA)
+        self.assertNotIn("thinking", review_body)
+
+    def test_review_call_on_a_legacy_review_model_omits_effort(self) -> None:
+        # Haiku 4.5 errors on output_config.effort - the capability map must
+        # keep it out of the request rather than forwarding it unchanged.
         transport = FakeTransport([_text_payload(CLEAN_DRAFT), _json_payload(PASSED_REVIEW)])
         provider = AnthropicDraftProvider("key", "claude-sonnet-5", review_model="claude-haiku-4-5", transport=transport)
 
@@ -208,7 +224,7 @@ class SelfReviewPassTests(unittest.TestCase):
 
         review_body = transport.requests[1]
         self.assertEqual(review_body["model"], "claude-haiku-4-5")
-        self.assertEqual(review_body["output_config"]["effort"], "low")
+        self.assertNotIn("effort", review_body.get("output_config", {}))
         self.assertEqual(review_body["output_config"]["format"]["schema"], REVIEW_SCHEMA)
         self.assertNotIn("thinking", review_body)
 
@@ -241,6 +257,68 @@ class SelfReviewPassTests(unittest.TestCase):
         for body in transport.requests:
             self.assertEqual([message["role"] for message in body["messages"]], ["user"])
             self.assertNotIn("output_format", body)
+
+
+class ModelCapabilityDrivenRequestTests(unittest.TestCase):
+    """The capability map (pa_agent.config.model_capabilities) must drive what
+    each request sends, not the call site - so a model switch never needs a
+    matching code change here."""
+
+    def test_haiku_drafting_call_omits_thinking(self) -> None:
+        transport = FakeTransport(
+            [
+                _json_payload(
+                    {"summary": "s", "options": [], "recommendation": "r", "sources": [], "open_questions": []}
+                )
+            ]
+        )
+        provider = AnthropicDraftProvider("key", "claude-haiku-4-5", transport=transport)
+
+        provider.create_brief("research crm options", [], [])
+
+        body = transport.requests[0]
+        self.assertEqual(body["model"], "claude-haiku-4-5")
+        self.assertNotIn("thinking", body)
+        self.assertNotIn("budget_tokens", json.dumps(body))
+
+    def test_haiku_draft_and_revision_calls_also_omit_thinking(self) -> None:
+        transport = FakeTransport([_text_payload(CLEAN_DRAFT), _json_payload(PASSED_REVIEW)])
+        provider = AnthropicDraftProvider("key", "claude-haiku-4-5", transport=transport)
+
+        provider.create_draft("research crm options", CONTACT, BRIEF)
+
+        for body in transport.requests:
+            self.assertNotIn("thinking", body)
+
+    def test_modern_model_drafting_call_still_gets_adaptive_thinking(self) -> None:
+        transport = FakeTransport(
+            [
+                _json_payload(
+                    {"summary": "s", "options": [], "recommendation": "r", "sources": [], "open_questions": []}
+                )
+            ]
+        )
+        provider = AnthropicDraftProvider("key", "claude-opus-4-8", transport=transport)
+
+        provider.create_brief("research crm options", [], [])
+
+        body = transport.requests[0]
+        self.assertEqual(body["thinking"], {"type": "adaptive"})
+
+    def test_bare_major_5_generation_model_still_gets_adaptive_thinking(self) -> None:
+        transport = FakeTransport(
+            [
+                _json_payload(
+                    {"summary": "s", "options": [], "recommendation": "r", "sources": [], "open_questions": []}
+                )
+            ]
+        )
+        provider = AnthropicDraftProvider("key", "claude-sonnet-5", transport=transport)
+
+        provider.create_brief("research crm options", [], [])
+
+        body = transport.requests[0]
+        self.assertEqual(body["thinking"], {"type": "adaptive"})
 
 
 if __name__ == "__main__":
