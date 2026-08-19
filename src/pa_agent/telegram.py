@@ -1,26 +1,77 @@
 from __future__ import annotations
 
+import http.client
 import json
 import re
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any
+from typing import Any, Callable
 
 from .app import build_store, build_workflow, refresh_obsidian_export
 from .config import Settings
+
+# Transient network failures the long-poll loop must survive rather than die from.
+# Anything not covered here (bad JSON, a genuine bug in a handler, etc.) still
+# propagates and crashes the process loudly, which is what we want for real bugs.
+NETWORK_ERRORS = (OSError, urllib.error.URLError, http.client.HTTPException)
+
+
+class NetworkRetry:
+    """Runs a call, retrying on transient network errors with geometric backoff.
+
+    Backoff starts at `initial` seconds, doubles on each consecutive network
+    failure up to `maximum`, and resets to `initial` as soon as a call succeeds.
+    Non-network exceptions are never caught here.
+    """
+
+    def __init__(
+        self,
+        initial: float = 5.0,
+        maximum: float = 60.0,
+        sleep: Callable[[float], None] = time.sleep,
+        on_retry: Callable[[BaseException, float], None] | None = None,
+    ) -> None:
+        self.initial = initial
+        self.maximum = maximum
+        self._sleep = sleep
+        self._on_retry = on_retry
+        self._current = initial
+
+    def call(self, func: Callable[[], Any]) -> Any:
+        while True:
+            try:
+                result = func()
+            except NETWORK_ERRORS as exc:
+                if self._on_retry:
+                    self._on_retry(exc, self._current)
+                self._sleep(self._current)
+                self._current = min(self._current * 2, self.maximum)
+                continue
+            self._current = self.initial
+            return result
 
 
 def run_telegram_bot(settings: Settings) -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required for Telegram mode.")
     offset = 0
+
+    def _log_retry(exc: BaseException, delay: float) -> None:
+        print(f"WARNING: Telegram network error ({exc!r}); retrying in {delay:.0f}s")
+
+    retry = NetworkRetry(on_retry=_log_retry)
     print("PA Agent Telegram polling started.")
     while True:
-        updates = _api(settings, "getUpdates", {"offset": offset, "timeout": 30})
-        for update in updates.get("result", []):
-            offset = max(offset, update["update_id"] + 1)
-            handle_update(settings, update)
+        def _poll() -> None:
+            nonlocal offset
+            updates = _api(settings, "getUpdates", {"offset": offset, "timeout": 30})
+            for update in updates.get("result", []):
+                offset = max(offset, update["update_id"] + 1)
+                handle_update(settings, update)
+
+        retry.call(_poll)
         time.sleep(0.5)
 
 
