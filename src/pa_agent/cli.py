@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
+
+from dotenv import load_dotenv
 
 from .app import build_store, build_workflow, refresh_obsidian_export
 from .config import load_settings
 from .db import connect, init_db
 from .telegram import run_telegram_bot
+
+# Load values from the project-root .env, if present. Real environment
+# variables already set take precedence (override=False is dotenv's default).
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 
 def main() -> None:

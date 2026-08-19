@@ -3,7 +3,7 @@ name = "personal-assistant-agent"
 version = "0.1.0"
 description = "Milestone 1 personal assistant agent: research briefs, outreach drafts, Obsidian export, and manual-send approval flow."
 requires-python = ">=3.13"
-dependencies = []
+dependencies = ["python-dotenv"]
 
 [project.scripts]
 pa-agent = "pa_agent.cli:main"
