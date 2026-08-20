@@ -56,6 +56,12 @@ class NetworkRetry:
 def run_telegram_bot(settings: Settings) -> None:
     if not settings.telegram_bot_token:
         raise RuntimeError("TELEGRAM_BOT_TOKEN is required for Telegram mode.")
+    if not settings.telegram_allowed_chat_id:
+        raise RuntimeError(
+            "TELEGRAM_ALLOWED_CHAT_ID is required for Telegram mode. "
+            "Without it every chat would be allowed to command the agent, so "
+            "Telegram mode refuses to start until it is set."
+        )
     offset = 0
 
     def _log_retry(exc: BaseException, delay: float) -> None:
@@ -222,7 +228,7 @@ def _send_task_summary(settings: Settings, chat_id: str, bundle: dict[str, Any])
 
 
 def _allowed(settings: Settings, chat_id: str) -> bool:
-    return not settings.telegram_allowed_chat_id or chat_id == settings.telegram_allowed_chat_id
+    return bool(settings.telegram_allowed_chat_id) and chat_id == settings.telegram_allowed_chat_id
 
 
 def _draft_actions(draft_id: str) -> dict[str, Any]:
